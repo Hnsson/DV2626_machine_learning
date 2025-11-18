@@ -40,6 +40,8 @@ y = df["quality"]
 
 # ------------- Step 1: Inspect dataset -------------
 divider("Inspect dataset")
+
+# Show how many samples there are per quality score and their relative ratio
 counts = y.value_counts().sort_index()
 ratios = counts / counts.sum()
 print(f"{YELLOW}{BOLD}Class counts:{RESET}\n", counts)
@@ -51,21 +53,24 @@ X_train, X_test, y_train, y_test = train_test_split(
     y,
     test_size=0.2,
     stratify=y,
+    random_state=42,
 )
 
 # ------------- Step 3,4,5: Repeated Stratified k-Fold CV on the TRAIN set -------------
 divider("Repeated Stratified k-Fold DV")
-cv = RepeatedStratifiedKFold(n_splits=3, n_repeats=10)
+cv = RepeatedStratifiedKFold(n_splits=3, n_repeats=10, random_state=42)
 
 models = {
-    "LogisticRegression": LogisticRegression(max_iter=1000),
-    "RandomForest": RandomForestClassifier(n_estimators=300),
+    "LogisticRegression": LogisticRegression(max_iter=1000, random_state=42),
+    "RandomForest": RandomForestClassifier(n_estimators=300, random_state=42),
 }
 
-scoring = "f1_weighted"  # Also saw f1_macro?
+# Use accuracy metric for model selection (tested multiple)
+scoring = "accuracy"
 
 cv_results_unbal = {}
 for name, model in models.items():
+    # Pipeline with standardize features
     pipeline_unbal = Pipeline([("scaler", StandardScaler()), ("model", model)])
     scores = cross_val_score(
         pipeline_unbal, X_train, y_train, cv=cv, scoring=scoring, n_jobs=-1
@@ -73,11 +78,13 @@ for name, model in models.items():
     cv_results_unbal[name] = (scores.mean(), scores.std())
     print(f"{YELLOW}{name} {scoring}: {RESET}{scores.mean():.4f} +- {scores.std():.4f}")
 
+# Pick the model with highest mean cross-validated accuracy
 best_unbal = max(cv_results_unbal, key=lambda k: cv_results_unbal[k][0])
 print(
     f"{GREEN}{BOLD}Best (unbalanced): {best_unbal}: {RESET}{cv_results_unbal[best_unbal][0]:.4f} +- {cv_results_unbal[best_unbal][1]:.4f}"
 )
 
+# Fit the selected model on the full (unbalanced) training set
 final_unbal = Pipeline(
     [
         ("scaler", StandardScaler()),
@@ -91,7 +98,7 @@ y_pred = final_unbal.predict(X_test)
 
 print("Unbalanced training:")
 print(f"{YELLOW}{BOLD}Accuracy:{RESET}", accuracy_score(y_test, y_pred))
-print(f"{YELLOW}{BOLD}Macro-F1:{RESET}", f1_score(y_test, y_pred, average="macro"))
+print(f"{YELLOW}{BOLD}F1-Score:{RESET}", f1_score(y_test, y_pred, average="macro"))
 print(classification_report(y_test, y_pred, digits=4, zero_division=0))
 
 
@@ -102,10 +109,11 @@ print(Counter(y_train), "\n")
 
 cv_results_bal = {}
 for name, model in models.items():
+    # New pipeline: scale features with SMOTE
     pipeline_bal = Pipeline(
         [
             ("scaler", StandardScaler()),
-            ("smote", SMOTE(k_neighbors=1)),
+            ("smote", SMOTE(random_state=42, k_neighbors=1)),
             ("model", model),
         ]
     )
@@ -117,6 +125,7 @@ for name, model in models.items():
         f"{YELLOW}[Balanced] {name} {scoring}: {RESET}{scores.mean():.4f} +- {scores.std():.4f}"
     )
 
+# Select the best model when trained with SMOTE-balanced data
 best_bal = max(cv_results_bal, key=lambda k: cv_results_bal[k][0])
 print(
     f"{GREEN}{BOLD}Best (balanced): {best_bal}: {RESET}{cv_results_bal[best_bal][0]:.4f} +- {cv_results_bal[best_bal][1]:.4f}"
@@ -125,16 +134,19 @@ print(
 
 # ------------- Step 9: Train the best model on the BALANCED train set & evaluate on the SAME test set -------------
 divider("Train best model on BALANCED & Evaluate")
+
+# Train a final pipeline with SMOTE on the full training set
 final_bal = Pipeline(
     [
         ("scaler", StandardScaler()),
-        ("smote", SMOTE(k_neighbors=1)),
+        ("smote", SMOTE(random_state=42, k_neighbors=1)),
         ("model", models[best_bal]),
     ]
 ).fit(X_train, y_train)
 
+# Evaluate to compare with unbalanced
 y_pred_bal = final_bal.predict(X_test)
 print("Balanced training (SMOTE in pipeline):")
 print(f"{YELLOW}{BOLD}Accuracy:{RESET}", accuracy_score(y_test, y_pred_bal))
-print(f"{YELLOW}{BOLD}Macro-F1:{RESET}", f1_score(y_test, y_pred_bal, average="macro"))
+print(f"{YELLOW}{BOLD}F1-Score:{RESET}", f1_score(y_test, y_pred_bal, average="macro"))
 print(classification_report(y_test, y_pred_bal, digits=4, zero_division=0))

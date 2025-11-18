@@ -1,7 +1,7 @@
 [project]
 name = "dv2626_machine_learning"
 version = "0.1.0"
-description = "Assignments for DV2626 Machine Learning"
+description = "Assignment 1 for DV2626 Machine Learning"
 readme = "README.md"
 requires-python = ">=3.10"
 
@@ -9,12 +9,5 @@ dependencies = [
     "imbalanced-learn>=0.14.0",
     "pandas>=2.3.3",
     "scikit-learn>=1.7.2",
-]
-
-[dependency-groups]
-dev = [
-    "black>=25.9.0",
-    "pytest>=8.4.2",
-    "ruff>=0.14.4",
 ]
 
