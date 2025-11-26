@@ -1,6 +1,6 @@
 # DV2626 Assignment 1: Wine Quality Classification
 ## Installation
-You can run the project using these 2 methods:
+You can run the project using these methods:
 
 ### Option 1 (Python venv)
 ```bash
