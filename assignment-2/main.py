@@ -130,7 +130,7 @@ def stratified_k_fold(
     algo_len = len(algorithms)
 
     n_splits = 10
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True)
 
     train_times = np.zeros((n_splits, algo_len))
     accs = np.zeros((n_splits, algo_len))
@@ -167,30 +167,7 @@ def summarize_table(
     return df_res.round(4)
 
 
-def friedman_test(metric_matrix):
-    n, k = metric_matrix.shape
-
-    ranks = np.zeros_like(metric_matrix)
-    for i in range(n):
-        order = np.argsort(-metric_matrix[i, :])
-        ranks[i, order] = np.arange(1, k + 1)
-    avg_ranks = ranks.mean(axis=0)
-    R = (k + 1) / 2.0
-    numerator = 12 * n / (k * (k + 1)) * np.sum((avg_ranks - R) ** 2)
-
-    friedman_chi2 = numerator
-    p_value = stats.chi2.sf(friedman_chi2, df=k - 1)
-    return {
-        "n": n,
-        "k": k,
-        "avg_ranks": avg_ranks,
-        "friedman_chi2": friedman_chi2,
-        "p_value": p_value,
-        "ranks_matrix": ranks,
-    }
-
-
-def print_friedman_table(ranking_matrix, algorithms, metric_name, display_matrix=None):
+def friedman_test(ranking_matrix, algorithms, metric_name, display_matrix=None):
     """
     ranking_matrix: used to compute ranks (higher -> rank 1). shape (n_folds, k)
     display_matrix: numeric values to print for each fold (same shape). If None, ranking_matrix is used.
@@ -239,13 +216,13 @@ def print_friedman_table(ranking_matrix, algorithms, metric_name, display_matrix
     print("-" * 80)
 
     # Friedman chi2 & p-value based on ranking_matrix (ranks already derived)
-    R = (k + 1) / 2
-    chi2 = (12 * n) / (k * (k + 1)) * np.sum((avg_ranks - R) ** 2)
-    p_value = stats.chi2.sf(chi2, df=k - 1)
-    print("Friedman Test Statistics:")
-    print(f"Chi-square statistic (X^2_F): {chi2:.4f}")
-    print(f"Degrees of freedom: {k - 1}")
-    print(f"P-value: {p_value:.6f}")
+    # R = (k + 1) / 2
+    # chi2 = (12 * n) / (k * (k + 1)) * np.sum((avg_ranks - R) ** 2)
+    # p_value = stats.chi2.sf(chi2, df=k - 1)  # = 1 - cdf
+    # print("Friedman Test Statistics:")
+    # print(f"Chi-square statistic (X^2_F): {chi2:.4f}")
+    # print(f"Degrees of freedom: {k - 1}")
+    # print(f"P-value: {p_value:.6f}")
 
 
 def run_nemenyi_test(avg_ranks, n, k, algo_names):
@@ -300,26 +277,36 @@ def main():
     print("assignment-2!")
     X, y, df = load_spam_dataset(data_path="data/spambase.data")
 
+    # Check some statistics:
+    n_total = len(y)
+    n_spam = np.sum(y == 1)
+    percent_spam = (n_spam / n_total) * 100
+
+    print(f"Total samples: {n_total}")
+    print(f"Spam samples: {n_spam}")
+    print(f"Spam percentage: {percent_spam:.2f}%")
+    # -------------------------
+
     algorithms = [
         (
             "LogisticRegression",
             make_pipeline(
                 StandardScaler(),
                 LogisticRegression(
-                    max_iter=5000, random_state=42
+                    max_iter=5000
                 ),  # Use scaler so penalty is applied evenly
             ),
         ),
         (
             "RandomForest",
-            RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=42),
+            RandomForestClassifier(n_estimators=200, n_jobs=-1),
         ),
         (
             "SVM",
             make_pipeline(
                 StandardScaler(),
                 SVC(
-                    probability=True, gamma="scale", random_state=42
+                    probability=True, gamma="scale"
                 ),  # Using scaler because its distance based
             ),
         ),
@@ -345,7 +332,7 @@ def main():
 
         print(f"\n=== Friedman test for {metric_name} ===")
         # print table using original display values but ranks computed from ranking_matrix
-        print_friedman_table(
+        friedman_test(
             ranking_matrix, algorithms, metric_name=metric_name, display_matrix=matrix
         )
 
@@ -360,6 +347,10 @@ def main():
         R = (k + 1) / 2
         chi2 = (12 * n) / (k * (k + 1)) * np.sum((avg_ranks - R) ** 2)
         p_value = stats.chi2.sf(chi2, df=k - 1)
+        print("Friedman Test Statistics:")
+        print(f"Chi-square statistic (X^2_F): {chi2:.4f}")
+        print(f"Degrees of freedom: {k - 1}")
+        print(f"P-value: {p_value:.6f}")
 
         if p_value < 0.05:
             print(
