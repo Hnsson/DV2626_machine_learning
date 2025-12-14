@@ -3,7 +3,7 @@
 # 3 supervised classification algorithms:
 #   - LogisticRegression
 #   - RandomForestClassifier
-#   - SVC
+#   - SVM
 
 import time
 import math
@@ -30,6 +30,7 @@ CYAN = "\033[36m"
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
 
+# Just to get the feature names from the dataset
 FEATURE_NAMES = [
     "word_freq_make",
     "word_freq_address",
@@ -91,22 +92,9 @@ FEATURE_NAMES = [
 ]
 
 
-def divider(title: str = "", width: int = 70, color: str = CYAN):
-    """
-    Prints a fancy colored divider with centered text.
-    Example:
-    divider("Step 4: Cross Validation")
-    """
-    RESET = "\033[0m"
-    if title:
-        title = f" {title} "
-    line = title.center(width, "=")
-    print(f"\n{color}{line}{RESET}")
-
-
 def load_spam_dataset(
     data_path: str = "data/spambase.data",
-) -> tuple[NDArray[Any], NDArray[Any], pd.DataFrame]:
+):
     cols = FEATURE_NAMES + ["class"]
 
     df = pd.read_csv(data_path, header=None, names=cols)
@@ -126,7 +114,7 @@ def stratified_k_fold(
     X: NDArray[Any],
     y: NDArray[Any],
     algorithms: List[Tuple[str, Any]],
-) -> tuple[NDArray[Any], NDArray[Any], NDArray[Any]]:
+):
     algo_len = len(algorithms)
 
     n_splits = 10
@@ -151,9 +139,7 @@ def stratified_k_fold(
     return train_times, accs, f1s
 
 
-def summarize_table(
-    values: NDArray[Any], metric_name: str, algorithms: List[Tuple[str, Any]]
-):
+def summarize_table(values: NDArray[Any], algorithms: List[Tuple[str, Any]]):
     # print per-fold results like Example 12.4: each row is a fold, last rows avg and stdev
     df_res = pd.DataFrame(values, columns=pd.Index([name for name, _ in algorithms]))
     df_res.index = [f"Fold {i + 1}" for i in range(values.shape[0])]
@@ -168,11 +154,6 @@ def summarize_table(
 
 
 def friedman_test(ranking_matrix, algorithms, metric_name, display_matrix=None):
-    """
-    ranking_matrix: used to compute ranks (higher -> rank 1). shape (n_folds, k)
-    display_matrix: numeric values to print for each fold (same shape). If None, ranking_matrix is used.
-    algorithms: list of (name, model) pairs
-    """
     if display_matrix is None:
         display_matrix = ranking_matrix
 
@@ -198,7 +179,6 @@ def friedman_test(ranking_matrix, algorithms, metric_name, display_matrix=None):
     print(header)
     print("-" * 80)
 
-    # fold rows: show display value and rank in parentheses
     for i in range(n):
         row = f"{i + 1}".ljust(13)
         for j in range(k):
@@ -215,34 +195,11 @@ def friedman_test(ranking_matrix, algorithms, metric_name, display_matrix=None):
     print()
     print("-" * 80)
 
-    # Friedman chi2 & p-value based on ranking_matrix (ranks already derived)
-    # R = (k + 1) / 2
-    # chi2 = (12 * n) / (k * (k + 1)) * np.sum((avg_ranks - R) ** 2)
-    # p_value = stats.chi2.sf(chi2, df=k - 1)  # = 1 - cdf
-    # print("Friedman Test Statistics:")
-    # print(f"Chi-square statistic (X^2_F): {chi2:.4f}")
-    # print(f"Degrees of freedom: {k - 1}")
-    # print(f"P-value: {p_value:.6f}")
+    return avg_ranks
 
 
 def run_nemenyi_test(avg_ranks, n, k, algo_names):
-    q_alpha_005 = {
-        2: 1.960,
-        3: 2.343,
-        4: 2.569,
-        5: 2.728,
-        6: 2.850,
-        7: 2.949,
-        8: 3.031,
-        9: 3.102,
-        10: 3.164,
-    }
-
-    q_val = q_alpha_005.get(k)
-    if not q_val:
-        print(f"Warning: Critical value for k={k} not found. Using k=3 value.")
-        q_val = 2.343
-
+    q_val = 2.343  # From the 4th source in the report when using 3 classifiers
     # Critical difference
     cd = q_val * np.sqrt((k * (k + 1)) / (6 * n))
 
@@ -277,7 +234,7 @@ def main():
     print("assignment-2!")
     X, y, df = load_spam_dataset(data_path="data/spambase.data")
 
-    # Check some statistics:
+    # Check some statistics (for report):
     n_total = len(y)
     n_spam = np.sum(y == 1)
     percent_spam = (n_spam / n_total) * 100
@@ -311,8 +268,7 @@ def main():
             ),
         ),
     ]
-    # Procedure:
-    # 1. Run stratified ten-fold cross-validation tests:
+
     train_times, accs, f1s = stratified_k_fold(X=X, y=y, algorithms=algorithms)
 
     for metric_name, matrix, larger_is_better in [
@@ -323,7 +279,7 @@ def main():
         print(
             f"\n=== {metric_name} per fold {'(seconds)' if metric_name == 'train_time' else ''} ==="
         )
-        print(summarize_table(matrix, metric_name, algorithms).to_string())
+        print(summarize_table(matrix, algorithms).to_string())
 
         if larger_is_better:
             ranking_matrix = matrix.copy()
@@ -331,19 +287,11 @@ def main():
             ranking_matrix = -matrix.copy()
 
         print(f"\n=== Friedman test for {metric_name} ===")
-        # print table using original display values but ranks computed from ranking_matrix
-        friedman_test(
+        avg_ranks = friedman_test(
             ranking_matrix, algorithms, metric_name=metric_name, display_matrix=matrix
         )
 
-        # Calculate chi2 and p-value to pass to Nemenyi logic
         n, k = ranking_matrix.shape
-        ranks = np.zeros_like(ranking_matrix)
-        for i in range(n):
-            order = np.argsort(-ranking_matrix[i, :])
-            ranks[i, order] = np.arange(1, k + 1)
-
-        avg_ranks = ranks.mean(axis=0)
         R = (k + 1) / 2
         chi2 = (12 * n) / (k * (k + 1)) * np.sum((avg_ranks - R) ** 2)
         p_value = stats.chi2.sf(chi2, df=k - 1)
