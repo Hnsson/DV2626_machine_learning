@@ -8,6 +8,17 @@ st.title("Exploratory Data Analysis (EDA)")
 
 ratings, users, movies = load_all_data()
 
+
+if ratings is not None:
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Users", int(users["UserID"].nunique()))
+    col2.metric("Total Movies", int(movies["MovieID"].nunique()))
+    col3.metric("Total Ratings", ratings.shape[0])
+else:
+    st.error(
+        "Could not find 'data/ratings.dat'. Please create a 'data' folder and put the MovieLens files inside."
+    )
+
 tab1, tab2, tab3 = st.tabs(["Ratings Analysis", "Demographics", "Correlations"])
 
 with tab1:
