@@ -1,3 +1,4 @@
+from collections import defaultdict
 import streamlit as st
 import pandas as pd
 from sklearn.metrics import mean_squared_error
@@ -27,27 +28,27 @@ def create_utility_matrix(data_split, users, movies):
     return utility_matrix.fillna(0)
 
 
-def evaluate_model_predictions(test_df, predictions_dict, k=10):
-    # Calculate Precision@K (Ranking Metric)
-    # Get the set of movies each user ACTUALLY liked (Rating >= 4) in Test
-    user_liked_actual = (
-        test_df[test_df["Rating"] >= 4]
-        .groupby("UserID")["MovieID"]
-        .apply(set)
-        .to_dict()
-    )
+def calculate_ranking_metrics(predictions, k=10, threshold=4.0):
+    # Map the predictions to each user
+    user_est_true = defaultdict(list)
+    for uid, iid, true_r, est, _ in predictions:
+        user_est_true[uid].append((est, true_r))
 
-    precisions = []
-    for user_id, recommended_items in predictions_dict.items():
-        # Get what this user liked in the test set
-        actual_likes = user_liked_actual.get(user_id, set())
+    precisions = dict()
+    recalls = dict()
 
-        if not actual_likes:
-            continue  # Skip users who didn't like anything in test (can't evaluate)
+    for uid, user_ratings in user_est_true.items():
+        user_ratings.sort(key=lambda x: x[0], reverse=True)
 
-        # Count hits
-        hits = len(actual_likes.intersection(set(recommended_items)))
-        precisions.append(hits / k)
+        n_rel = sum((true_r >= threshold) for (_, true_r) in user_ratings)
+        n_rec_k = sum((est >= threshold) for (est, _) in user_ratings[:k])
 
-    precision_score = np.mean(precisions) if precisions else 0
-    return precision_score
+        n_rel_and_rec_k = sum(
+            ((true_r >= threshold) and (est >= threshold))
+            for (est, true_r) in user_ratings[:k]
+        )
+
+        precisions[uid] = n_rel_and_rec_k / n_rec_k if n_rec_k != 0 else 0
+        recalls[uid] = n_rel_and_rec_k / n_rel if n_rel != 0 else 0
+
+    return np.mean(list(precisions.values())), np.mean(list(recalls.values()))

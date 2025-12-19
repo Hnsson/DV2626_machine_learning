@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from sklearn.metrics import mean_squared_error
 from src.data_loader import load_all_data
-from src.utils import stratified_split, create_utility_matrix
+from src.utils import calculate_ranking_metrics, stratified_split, create_utility_matrix
 
 from surprise import Dataset, Reader, KNNBasic, SVD
 from collections import defaultdict
@@ -127,60 +127,72 @@ with st.expander("Phase 5: Baseline Models", expanded=False):
     st.subheader("Global Mean Baseline")
     mean_rating = train_df["Rating"].mean()
     test_df["MeanPrediction"] = mean_rating
-    rmse = np.sqrt(mean_squared_error(test_df["Rating"], test_df["MeanPrediction"]))
-    col1, col2 = st.columns(2)
-    col1.metric("Training Set Mean Rating", f"{mean_rating:.4f}")
-    col2.metric("Global Mean RMSE", f"{rmse:.4f}")
+    baseline_rmse = np.sqrt(
+        mean_squared_error(test_df["Rating"], test_df["MeanPrediction"])
+    )
+    st.metric("Training Set Mean Rating", f"{mean_rating:.4f}")
 
     # --- Popularity Baseline ---
     st.subheader("Popularity Baseline (Non-Personalized)")
     st.info(
         """
         **Precision@K**: Out of the K movies we recommended, what fraction did the user *actually* like?
-        We define "liked" as a rating of 4 or higher.
+        I define "liked" as a rating of 4 or higher.
         """
     )
 
     @st.cache_data
-    def calculate_popularity_baseline(train_df, movies_df, k=10):
+    def get_top_k_popular(train_df, movies_df, k=10):
         movie_popularity = (
             train_df.groupby("MovieID").size().reset_index(name="RatingCount")
         )
-        top_k_popular = (
+        top_k = (
             movie_popularity.sort_values("RatingCount", ascending=False)
             .head(k)
             .merge(movies_df, on="MovieID")
         )
-        return top_k_popular
+        return top_k
 
-    def calculate_precision_at_k(test_df, top_k_df, k=10):
-        top_k_movie_ids = set(top_k_df["MovieID"])
-        user_liked_items = (
-            test_df[test_df["Rating"] >= 4]
-            .groupby("UserID")["MovieID"]
-            .apply(set)
-            .to_dict()
-        )
-        test_user_ids = set(test_df["UserID"])
+    def calculate_popularity_metrics(test_df, top_k_df, k=10, threshold=4.0):
+        top_k_ids = set(top_k_df["MovieID"])
+        user_groups = test_df.groupby("UserID")
+
         precisions = []
-        for user_id in test_user_ids:
-            liked_movies = user_liked_items.get(user_id, set())
-            hits = len(top_k_movie_ids.intersection(liked_movies))
-            precision = hits / k
-            precisions.append(precision)
-        return np.mean(precisions)
+        recalls = []
 
-    top_10_popular = calculate_popularity_baseline(train_df, movies, k=10)
-    precision_at_10 = calculate_precision_at_k(test_df, top_10_popular, k=10)
+        for _, group in user_groups:
+            relevant_items = set(group[group["Rating"] >= threshold]["MovieID"])
 
-    st.metric("Popularity Baseline Precision@10", f"{precision_at_10:.4f}")
-    st.write("Top 10 Most Popular Movies (from Training Set):")
+            if not relevant_items:
+                continue  # Skip users with no "likes" in test set (can't calculate recall)
+
+            hits = len(top_k_ids.intersection(relevant_items))
+            precisions.append(hits / k)
+            recalls.append(hits / len(relevant_items))
+
+        return np.mean(precisions), np.mean(recalls)
+
+    top_10_popular = get_top_k_popular(train_df, movies, k=10)
+    pop_prec, pop_rec = calculate_popularity_metrics(test_df, top_10_popular, 10, 4.0)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Global Mean RMSE (Lower is better)", f"{baseline_rmse:.4f}")
+    c2.metric(
+        "Top-10 Precision (Higher is better)",
+        f"{pop_prec:.4f}",
+        help="Baseline to beat",
+    )
+    c3.metric(
+        "Top-10 Recall (Higher is better", f"{pop_rec:.4f}", help="Baseline to beat"
+    )
+
+    st.write("Top 10 Most Popular Movies:")
     st.dataframe(
         top_10_popular[["Title", "Genres", "RatingCount"]], use_container_width=True
     )
 
 with st.expander("Phase 6: Collaborative Filtering (User-KNN)", expanded=False):
-    st.write("Implementing User-Based KNN to find 'Users like you'.")
+    st.caption("Evaluation of User-Based KNN vs Baseline")
 
     @st.cache_data
     def train_and_predict_knn(train_df, test_df):
@@ -199,18 +211,30 @@ with st.expander("Phase 6: Collaborative Filtering (User-KNN)", expanded=False):
         test_set = list(zip(test_df["UserID"], test_df["MovieID"], test_df["Rating"]))
         predictions = algo_knn.test(test_set)
 
-        return [pred.est for pred in predictions]
+        return predictions
 
     with st.spinner("Training KNN & Generating Predictions..."):
-        test_df["KNN_Prediction"] = train_and_predict_knn(train_df, test_df)
+        knn_predictions = train_and_predict_knn(train_df, test_df)
+        test_df["KNN_Prediction"] = [pred.est for pred in knn_predictions]
 
     knn_rmse = np.sqrt(mean_squared_error(test_df["Rating"], test_df["KNN_Prediction"]))
-    st.metric(
-        "User-KNN RMSE",
+    knn_prec, knn_rec = calculate_ranking_metrics(knn_predictions, 10, 4.0)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric(
+        "User-KNN RMSE (Lower is better)",
         f"{knn_rmse:.4f}",
-        delta=f"{mean_rating - knn_rmse:.4f} improvement over baseline",
+        delta=f"{mean_rating - knn_rmse:.4f} vs Baseline",
         delta_arrow="down",
     )
+    delta_prec = (
+        f"{knn_prec - pop_prec:.4f} vs Baseline" if "pop_prec" in locals() else None
+    )
+    c2.metric("Precision@10 (Higher is better)", f"{knn_prec:.4f}", delta=delta_prec)
+    delta_rec = (
+        f"{knn_rec - pop_rec:.4f} vs Baseline" if "pop_rec" in locals() else None
+    )
+    c3.metric("Recall@10 (Higher is better)", f"{knn_rec:.4f}", delta=delta_rec)
 
     example_user = selected_user_id
     st.write(f"**Example Prediction for User {example_user}:**")
@@ -219,12 +243,10 @@ with st.expander("Phase 6: Collaborative Filtering (User-KNN)", expanded=False):
     st.dataframe(user_test_samples[["Title", "Rating", "KNN_Prediction"]])
 
 with st.expander("Phase 7: Collaborative Filtering (Item-KNN)", expanded=False):
-    st.write(
-        "Implementing Item- Based KNN to find 'Movies similar to what you watched'."
-    )
+    st.caption("Evaluation of Item-Based KNN vs Baseline.")
 
     @st.cache_data
-    def train__and_predict_item_knn(train_df, test_df):
+    def train_and_predict_item_knn(train_df, test_df):
         reader = Reader(rating_scale=(1, 5))
         train_data = Dataset.load_from_df(
             train_df[["UserID", "MovieID", "Rating"]], reader
@@ -237,25 +259,43 @@ with st.expander("Phase 7: Collaborative Filtering (Item-KNN)", expanded=False):
         test_set = list(zip(test_df["UserID"], test_df["MovieID"], test_df["Rating"]))
         predictions = algo_item_knn.test(test_set)
 
-        return [pred.est for pred in predictions]
+        return predictions
 
     with st.spinner("Training Item-KNN & Generating Predictions..."):
-        test_df["Item_KNN_Prediction"] = train__and_predict_item_knn(train_df, test_df)
+        item_knn_predictions = train_and_predict_item_knn(train_df, test_df)
+        test_df["Item_KNN_Prediction"] = [pred.est for pred in item_knn_predictions]
 
     item_knn_rmse = np.sqrt(
         mean_squared_error(test_df["Rating"], test_df["Item_KNN_Prediction"])
     )
+    item_knn_prec, item_knn_rec = calculate_ranking_metrics(
+        item_knn_predictions, 10, 4.0
+    )
 
-    col1, col2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
 
-    col1.metric(
-        "Item-KNN RMSE",
+    c1.metric(
+        "Item-KNN RMSE (Lower is better)",
         f"{item_knn_rmse:.4f}",
-        delta=f"{mean_rating - item_knn_rmse:.4f} improvement over baseline",
+        delta=f"{mean_rating - item_knn_rmse:.4f} vs Baseline",
         delta_arrow="down",
     )
+    delta_prec = (
+        f"{item_knn_prec - pop_prec:.4f} vs Baseline"
+        if "pop_prec" in locals()
+        else None
+    )
+    c2.metric(
+        "Precision@10 (Higher is better)", f"{item_knn_prec:.4f}", delta=delta_prec
+    )
+    delta_rec = (
+        f"{item_knn_rec - pop_rec:.4f} vs Baseline" if "pop_rec" in locals() else None
+    )
+    c3.metric("Recall@10 (Higher is better)", f"{item_knn_rec:.4f}", delta=delta_rec)
+    st.caption("Comparison of Item-Based KNN vs Models.")
+
     if "knn_rmse" in locals():
-        col2.metric(
+        st.metric(
             label="Change vs User-KNN",
             value=f"{item_knn_rmse - knn_rmse:.4f}",  # The raw RMSE difference (e.g. -0.05)
             delta=f"{((item_knn_rmse - knn_rmse) / knn_rmse) * 100:.2f}%",  # The percentage change (e.g. -5.20%)
@@ -272,7 +312,7 @@ with st.expander("Phase 7: Collaborative Filtering (Item-KNN)", expanded=False):
 
 
 with st.expander("Phase 8: Matrix Factorization (SVD)", expanded=True):
-    st.write("Implementing SVD to discover hidden features")
+    st.caption("Implementing SVD to discover hidden features")
 
     @st.cache_data
     def train_and_predict_svd(train_df, test_df):
@@ -287,30 +327,43 @@ with st.expander("Phase 8: Matrix Factorization (SVD)", expanded=True):
         test_set = list(zip(test_df["UserID"], test_df["MovieID"], test_df["Rating"]))
         predictions = algo_svd.test(test_set)
 
-        return [pred.est for pred in predictions]
+        return predictions
 
-    svd_preds = train_and_predict_svd(train_df, test_df)
-    test_df["SVD_Prediction"] = svd_preds
+    with st.spinner("Training SVD & Generating Predictions..."):
+        svd_predictions = train_and_predict_svd(train_df, test_df)
+        test_df["SVD_Prediction"] = [pred.est for pred in svd_predictions]
 
     svd_rmse = np.sqrt(mean_squared_error(test_df["Rating"], test_df["SVD_Prediction"]))
+    svd_prec, svd_rec = calculate_ranking_metrics(svd_predictions, 10, 4.0)
 
-    col1, col2, col3 = st.columns(3)
+    c1, c2, c3 = st.columns(3)
 
-    col1.metric(
-        "SVD RMSE",
+    c1.metric(
+        "SVD RMSE (Lower is better)",
         f"{svd_rmse:.4f}",
-        delta=f"{mean_rating - svd_rmse:.4f} improvement over baseline",
+        delta=f"{mean_rating - svd_rmse:.4f} vs Baseline",
         delta_arrow="down",
     )
+    delta_prec = (
+        f"{svd_prec - pop_prec:.4f} vs Baseline" if "pop_prec" in locals() else None
+    )
+    c2.metric("Precision@10 (Higher is better)", f"{svd_prec:.4f}", delta=delta_prec)
+    delta_rec = (
+        f"{svd_rec - pop_rec:.4f} vs Baseline" if "pop_rec" in locals() else None
+    )
+    c3.metric("Recall@10 (Higher is better)", f"{svd_rec:.4f}", delta=delta_rec)
+
+    st.caption("Comparison of SVD vs Models")
+    col1, col2 = st.columns(2)
     if "knn_rmse" in locals():
-        col2.metric(
+        col1.metric(
             label="Change vs User-KNN",
             value=f"{svd_rmse - knn_rmse:.4f}",  # The raw RMSE difference (e.g. -0.05)
             delta=f"{((svd_rmse - knn_rmse) / knn_rmse) * 100:.2f}%",  # The percentage change (e.g. -5.20%)
             delta_color="inverse",  # inverse: Negative (lower Error) = Green/Good
         )
     if "item_knn_rmse" in locals():
-        col3.metric(
+        col2.metric(
             label="Change vs Item-KNN",
             value=f"{svd_rmse - item_knn_rmse:.4f}",  # The raw RMSE difference (e.g. -0.05)
             delta=f"{((svd_rmse - item_knn_rmse) / item_knn_rmse) * 100:.2f}%",  # The percentage change (e.g. -5.20%)
