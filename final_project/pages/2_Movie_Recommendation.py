@@ -163,7 +163,7 @@ with st.expander(
                 .head(5)
                 .style.highlight_min(subset=["mean_test_rmse"], color="#378353")
                 .format({"param_lr_all": "{:.2f}"}),
-                use_container_width=True,
+                width="stretch",
             )
 
     # --- KNN TUNING ---
@@ -206,7 +206,7 @@ with st.expander(
                 results_df[["param_k", "type", "metric", "mean_test_rmse"]]
                 .sort_values("mean_test_rmse")
                 .style.apply(highlight_best_types, axis=1),
-                use_container_width=True,
+                width="stretch",
             )
 
 
@@ -283,9 +283,7 @@ with st.expander("Phase 5: Baseline Models", expanded=False):
     )
 
     st.write("Top 10 Most Popular Movies:")
-    st.dataframe(
-        top_10_popular[["Title", "Genres", "RatingCount"]], use_container_width=True
-    )
+    st.dataframe(top_10_popular[["Title", "Genres", "RatingCount"]], width="stretch")
 
 
 with st.expander("Phase 7: Collaborative Filtering (Item-KNN)", expanded=False):
@@ -608,7 +606,12 @@ with st.expander("Phase 9: Demo - Cold Start (Demographic Clustering)", expanded
         occ_code = occ_map[new_occ_str]
 
     # Predict cluster
-    input_features = scaler.transform([[gender_code, age_code, occ_code]])
+    input_df = pd.DataFrame(
+        [[gender_code, age_code, occ_code]],
+        columns=["Gender_Code", "Age", "Occupation"],
+    )
+    input_features = scaler.transform(input_df)
+    # input_features = scaler.transform([[gender_code, age_code, occ_code]])
     predicted_cluster = kmeans_model.predict(input_features)[0]
 
     st.success(f"**Result:** This profile falls into **Cluster {predicted_cluster}**.")
@@ -623,5 +626,5 @@ with st.expander("Phase 9: Demo - Cold Start (Demographic Clustering)", expanded
             {"MeanRating": "{:.2f}"}
         ),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
