@@ -560,7 +560,7 @@ with st.expander("Phase 9: Demo - Cold Start (Demographic Clustering)", expanded
     c1.metric(
         "Cluster RMSE (Lower is better)",
         f"{clust_rmse:.4f}",
-        delta=f"{baseline_rmse - clust_rmse:.4f} vs Baseline",
+        delta=f"{clust_rmse - baseline_rmse:.4f} vs Baseline",
         delta_color="inverse",
     )
 
