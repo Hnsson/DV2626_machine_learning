@@ -3,9 +3,17 @@ import pandas as pd
 import numpy as np
 from sklearn.metrics import mean_squared_error
 from src.data_loader import load_all_data
-from src.utils import calculate_ranking_metrics, stratified_split, create_utility_matrix
+from src.utils import (
+    calculate_ranking_metrics,
+    stratified_split,
+    create_utility_matrix,
+    train_user_clustering,
+    get_cluster_top_movies,
+    get_clustering_predictions,
+)
 
 from surprise import Dataset, Reader, KNNBasic, SVD
+from surprise.model_selection import GridSearchCV
 from collections import defaultdict
 
 st.set_page_config(page_title="Movie Recommendation", layout="wide")
@@ -28,35 +36,7 @@ merged_df["Is_Outlier"] = (merged_df["AgeDesc"] == "Under 18") & (
 train_df, test_df = stratified_split(merged_df, "UserID")
 
 
-st.header("Select a Test User")
-
-valid_user_ids = test_df["UserID"].unique()
-valid_user_ids.sort()
-user_meta = users.set_index("UserID")[["Gender", "Age", "OccupationDesc"]].to_dict(
-    "index"
-)
-
-
-def user_format_func(user_id):
-    if user_id in user_meta:
-        u = user_meta[user_id]
-        return f"({u['Gender']}) - \t{u['Age']} years old - {u['OccupationDesc']}"
-    return f"ID {user_id}"
-
-
-selected_user_id = st.selectbox(
-    "Choose a User ID to analyze:",
-    options=valid_user_ids,
-    format_func=user_format_func,
-    index=None,
-    placeholder="Select a user to begin model training...",
-)
-if selected_user_id is None:
-    st.info(
-        "Please select a User ID above to train the models and generate predictions."
-    )
-    st.stop()
-st.divider()
+selected_user_id = 6028  # 18 year old college student (just for test)
 
 # --- Preprocessing Expander ---
 with st.expander("Phase 4: Preprocessing & Splitting", expanded=False):
@@ -112,6 +92,122 @@ with st.expander("Phase 4: Preprocessing & Splitting", expanded=False):
     st.write("Utility matrix shape:", utility_matrix.shape)
     st.write("A peek at the utility matrix:")
     st.dataframe(utility_matrix.head())
+with st.expander(
+    "Phase 4b: Model Configuration & Hyperparameter Tuning", expanded=False
+):
+    st.caption(
+        """
+        To ensure optimal performance, I used a **Grid Search Cross-Validation** to select the best hyperparameters for the algorithms.
+        """
+    )
+
+    @st.cache_data
+    def run_tuning(df, algorithm_name):
+        subset_df = df.sample(n=20000, random_state=42)
+
+        reader = Reader(rating_scale=(1, 5))
+        data = Dataset.load_from_df(subset_df[["UserID", "MovieID", "Rating"]], reader)
+
+        if algorithm_name == "SVD":
+            param_grid = {
+                "n_factors": [20, 50, 100],  # Latent Factors
+                "lr_all": [0.005, 0.01],  # Learning Rate
+            }
+            algo_class = SVD
+
+        elif algorithm_name == "KNN":
+            param_grid = {
+                "k": [20, 40, 60],
+                "sim_options": {
+                    "name": ["cosine", "pearson"],
+                    "user_based": [True, False],  # Comparing user-based variants
+                },
+            }
+            algo_class = KNNBasic
+
+        gs = GridSearchCV(algo_class, param_grid, measures=["rmse"], cv=3)
+        gs.fit(data)
+
+        return (
+            gs.best_score["rmse"],
+            gs.best_params["rmse"],
+            pd.DataFrame.from_dict(gs.cv_results),
+        )
+
+    tab1, tab2 = st.tabs(["SVD Tuning", "KNN Tuning"])
+
+    # --- SVD TUNING ---
+    with tab1:
+        st.write(
+            "Optimize **Latent Factors**, **Learning Rate**, and **Regularization**."
+        )
+
+        if st.button("Run SVD Grid Search"):
+            with st.spinner("Running 3-Fold Cross-Validation on SVD..."):
+                best_score, best_params, results_df = run_tuning(merged_df, "SVD")
+
+            st.success(f"**Best RMSE found:** {best_score:.6f}")
+            st.json(best_params)
+
+            st.write("Grid Search Results (Top 5 Configurations):")
+            st.dataframe(
+                results_df[
+                    [
+                        "param_n_factors",
+                        "param_lr_all",
+                        "mean_test_rmse",
+                        "mean_fit_time",
+                    ]
+                ]
+                .sort_values("mean_test_rmse")
+                .head(5)
+                .style.highlight_min(subset=["mean_test_rmse"], color="#378353")
+                .format({"param_lr_all": "{:.2f}"}),
+                use_container_width=True,
+            )
+
+    # --- KNN TUNING ---
+    with tab2:
+        st.write("Optimize **k (Neighbors)** and **Similarity Metric**.")
+
+        if st.button("Run KNN Grid Search"):
+            with st.spinner("Running 3-Fold Cross-Validation on KNN..."):
+                best_score, best_params, results_df = run_tuning(merged_df, "KNN")
+
+            st.success(f"**Best RMSE found:** {best_score:.6f}")
+            st.json(best_params)
+
+            st.write("Grid Search Results:")
+
+            # Small fix to make sim_options string readable in dataframe
+            results_df["metric"] = results_df["param_sim_options"].apply(
+                lambda x: x["name"]
+            )
+            results_df["type"] = results_df["param_sim_options"].apply(
+                lambda x: "User-Based" if x["user_based"] else "Item-Based"
+            )
+
+            best_user_idx = results_df[results_df["type"] == "User-Based"][
+                "mean_test_rmse"
+            ].idxmin()
+            best_item_idx = results_df[results_df["type"] == "Item-Based"][
+                "mean_test_rmse"
+            ].idxmin()
+
+            def highlight_best_types(row):
+                if row.name == best_user_idx:
+                    return ["background-color: #378353;"] * len(row)
+                elif row.name == best_item_idx:
+                    return ["background-color: #375282;"] * len(row)
+                else:
+                    return [""] * len(row)
+
+            st.dataframe(
+                results_df[["param_k", "type", "metric", "mean_test_rmse"]]
+                .sort_values("mean_test_rmse")
+                .style.apply(highlight_best_types, axis=1),
+                use_container_width=True,
+            )
 
 
 # --- Baseline Models Expander ---
@@ -191,56 +287,6 @@ with st.expander("Phase 5: Baseline Models", expanded=False):
         top_10_popular[["Title", "Genres", "RatingCount"]], use_container_width=True
     )
 
-with st.expander("Phase 6: Collaborative Filtering (User-KNN)", expanded=False):
-    st.caption("Evaluation of User-Based KNN vs Baseline")
-
-    @st.cache_data
-    def train_and_predict_knn(train_df, test_df):
-        # 1. Re-create the Surprise objects inside (so Streamlit hashes the DataFrames correctly)
-        reader = Reader(rating_scale=(1, 5))
-        train_data = Dataset.load_from_df(
-            train_df[["UserID", "MovieID", "Rating"]], reader
-        ).build_full_trainset()
-
-        # 2. Train
-        sim_options = {"name": "cosine", "user_based": True}
-        algo_knn = KNNBasic(sim_options=sim_options, verbose=False)
-        algo_knn.fit(train_data)
-
-        # 3. Predict (Vectorized)
-        test_set = list(zip(test_df["UserID"], test_df["MovieID"], test_df["Rating"]))
-        predictions = algo_knn.test(test_set)
-
-        return predictions
-
-    with st.spinner("Training KNN & Generating Predictions..."):
-        knn_predictions = train_and_predict_knn(train_df, test_df)
-        test_df["KNN_Prediction"] = [pred.est for pred in knn_predictions]
-
-    knn_rmse = np.sqrt(mean_squared_error(test_df["Rating"], test_df["KNN_Prediction"]))
-    knn_prec, knn_rec = calculate_ranking_metrics(knn_predictions, 10, 4.0)
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric(
-        "User-KNN RMSE (Lower is better)",
-        f"{knn_rmse:.4f}",
-        delta=f"{mean_rating - knn_rmse:.4f} vs Baseline",
-        delta_arrow="down",
-    )
-    delta_prec = (
-        f"{knn_prec - pop_prec:.4f} vs Baseline" if "pop_prec" in locals() else None
-    )
-    c2.metric("Precision@10 (Higher is better)", f"{knn_prec:.4f}", delta=delta_prec)
-    delta_rec = (
-        f"{knn_rec - pop_rec:.4f} vs Baseline" if "pop_rec" in locals() else None
-    )
-    c3.metric("Recall@10 (Higher is better)", f"{knn_rec:.4f}", delta=delta_rec)
-
-    example_user = selected_user_id
-    st.write(f"**Example Prediction for User {example_user}:**")
-
-    user_test_samples = test_df[test_df["UserID"] == example_user].head(5)
-    st.dataframe(user_test_samples[["Title", "Rating", "KNN_Prediction"]])
 
 with st.expander("Phase 7: Collaborative Filtering (Item-KNN)", expanded=False):
     st.caption("Evaluation of Item-Based KNN vs Baseline.")
@@ -252,8 +298,8 @@ with st.expander("Phase 7: Collaborative Filtering (Item-KNN)", expanded=False):
             train_df[["UserID", "MovieID", "Rating"]], reader
         ).build_full_trainset()
 
-        sim_options = {"name": "cosine", "user_based": False}
-        algo_item_knn = KNNBasic(sim_options=sim_options, verbose=False)
+        sim_options = {"name": "pearson", "user_based": False}
+        algo_item_knn = KNNBasic(k=20, sim_options=sim_options, verbose=False)
         algo_item_knn.fit(train_data)
 
         test_set = list(zip(test_df["UserID"], test_df["MovieID"], test_df["Rating"]))
@@ -277,9 +323,10 @@ with st.expander("Phase 7: Collaborative Filtering (Item-KNN)", expanded=False):
     c1.metric(
         "Item-KNN RMSE (Lower is better)",
         f"{item_knn_rmse:.4f}",
-        delta=f"{mean_rating - item_knn_rmse:.4f} vs Baseline",
-        delta_arrow="down",
+        delta=f"{item_knn_rmse - baseline_rmse:.4f} vs Baseline",
+        delta_color="inverse",
     )
+
     delta_prec = (
         f"{item_knn_prec - pop_prec:.4f} vs Baseline"
         if "pop_prec" in locals()
@@ -292,14 +339,85 @@ with st.expander("Phase 7: Collaborative Filtering (Item-KNN)", expanded=False):
         f"{item_knn_rec - pop_rec:.4f} vs Baseline" if "pop_rec" in locals() else None
     )
     c3.metric("Recall@10 (Higher is better)", f"{item_knn_rec:.4f}", delta=delta_rec)
-    st.caption("Comparison of Item-Based KNN vs Models.")
 
-    if "knn_rmse" in locals():
-        st.metric(
-            label="Change vs User-KNN",
-            value=f"{item_knn_rmse - knn_rmse:.4f}",  # The raw RMSE difference (e.g. -0.05)
-            delta=f"{((item_knn_rmse - knn_rmse) / knn_rmse) * 100:.2f}%",  # The percentage change (e.g. -5.20%)
-            delta_color="inverse",  # inverse: Negative (lower Error) = Green/Good
+    example_user = selected_user_id
+    st.write(f"**Example Prediction for User {example_user}:**")
+
+    user_test_samples = test_df[test_df["UserID"] == example_user].head(5)
+    st.dataframe(user_test_samples[["Title", "Rating", "Item_KNN_Prediction"]])
+
+with st.expander("Phase 6: Collaborative Filtering (User-KNN)", expanded=False):
+    st.caption("Evaluation of User-Based KNN vs Baseline")
+
+    @st.cache_data
+    def train_and_predict_knn(train_df, test_df):
+        # 1. Re-create the Surprise objects inside (so Streamlit hashes the DataFrames correctly)
+        reader = Reader(rating_scale=(1, 5))
+        train_data = Dataset.load_from_df(
+            train_df[["UserID", "MovieID", "Rating"]], reader
+        ).build_full_trainset()
+
+        # 2. Train
+        sim_options = {"name": "pearson", "user_based": True}
+        algo_knn = KNNBasic(k=20, sim_options=sim_options, verbose=False)
+        algo_knn.fit(train_data)
+
+        # 3. Predict (Vectorized)
+        test_set = list(zip(test_df["UserID"], test_df["MovieID"], test_df["Rating"]))
+        predictions = algo_knn.test(test_set)
+
+        return predictions
+
+    with st.spinner("Training KNN & Generating Predictions..."):
+        user_knn_predictions = train_and_predict_knn(train_df, test_df)
+        test_df["User_KNN_Prediction"] = [pred.est for pred in user_knn_predictions]
+
+    user_knn_rmse = np.sqrt(
+        mean_squared_error(test_df["Rating"], test_df["User_KNN_Prediction"])
+    )
+    user_knn_prec, user_knn_rec = calculate_ranking_metrics(
+        user_knn_predictions, 10, 4.0
+    )
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric(
+        "User-KNN RMSE (Lower is better)",
+        f"{user_knn_rmse:.4f}",
+        delta=f"{user_knn_rmse - baseline_rmse:.4f} vs Baseline",
+        delta_color="inverse",
+    )
+
+    delta_prec = (
+        f"{user_knn_prec - pop_prec:.4f} vs Baseline"
+        if "pop_prec" in locals()
+        else None
+    )
+    c2.metric(
+        "Precision@10 (Higher is better)", f"{user_knn_prec:.4f}", delta=delta_prec
+    )
+    delta_rec = (
+        f"{user_knn_rec - pop_rec:.4f} vs Baseline" if "pop_rec" in locals() else None
+    )
+    c3.metric("Recall@10 (Higher is better)", f"{user_knn_rec:.4f}", delta=delta_rec)
+
+    if "item_knn_rmse" in locals():
+        st.caption("Comparison vs Item-Based KNN")
+        col1, col2, col3 = st.columns(3)
+        col1.metric(
+            label="RMSE",
+            value=f"{user_knn_rmse - item_knn_rmse:.4f}",
+            delta=f"{((user_knn_rmse - item_knn_rmse) / item_knn_rmse) * 100:.2f}%",
+            delta_color="inverse",
+        )
+        col2.metric(
+            label="Precision@10",
+            value=f"{user_knn_prec - item_knn_prec:.4f}",
+            delta=f"{((user_knn_prec - item_knn_prec) / item_knn_prec) * 100:.2f}%",
+        )
+        col3.metric(
+            label="Precision@10",
+            value=f"{user_knn_rec - item_knn_rec:.4f}",
+            delta=f"{((user_knn_rec - item_knn_rec) / item_knn_rec) * 100:.2f}%",
         )
 
     example_user = selected_user_id
@@ -307,12 +425,13 @@ with st.expander("Phase 7: Collaborative Filtering (Item-KNN)", expanded=False):
 
     user_test_samples = test_df[test_df["UserID"] == example_user].head(5)
     st.dataframe(
-        user_test_samples[["Title", "Rating", "Item_KNN_Prediction", "KNN_Prediction"]]
+        user_test_samples[
+            ["Title", "Rating", "User_KNN_Prediction", "Item_KNN_Prediction"]
+        ]
     )
 
-
 with st.expander("Phase 8: Matrix Factorization (SVD)", expanded=True):
-    st.caption("Implementing SVD to discover hidden features")
+    st.caption("Implementing and evaluating SVD")
 
     @st.cache_data
     def train_and_predict_svd(train_df, test_df):
@@ -321,7 +440,7 @@ with st.expander("Phase 8: Matrix Factorization (SVD)", expanded=True):
             train_df[["UserID", "MovieID", "Rating"]], reader
         ).build_full_trainset()
 
-        algo_svd = SVD(n_factors=100, random_state=42)
+        algo_svd = SVD(n_factors=20, lr_all=0.01, random_state=42)
         algo_svd.fit(train_data)
 
         test_set = list(zip(test_df["UserID"], test_df["MovieID"], test_df["Rating"]))
@@ -341,9 +460,10 @@ with st.expander("Phase 8: Matrix Factorization (SVD)", expanded=True):
     c1.metric(
         "SVD RMSE (Lower is better)",
         f"{svd_rmse:.4f}",
-        delta=f"{mean_rating - svd_rmse:.4f} vs Baseline",
-        delta_arrow="down",
+        delta=f"{svd_rmse - baseline_rmse:.4f} vs Baseline",
+        delta_color="inverse",
     )
+
     delta_prec = (
         f"{svd_prec - pop_prec:.4f} vs Baseline" if "pop_prec" in locals() else None
     )
@@ -353,27 +473,50 @@ with st.expander("Phase 8: Matrix Factorization (SVD)", expanded=True):
     )
     c3.metric("Recall@10 (Higher is better)", f"{svd_rec:.4f}", delta=delta_rec)
 
-    st.caption("Comparison of SVD vs Models")
     col1, col2 = st.columns(2)
-    if "knn_rmse" in locals():
-        col1.metric(
-            label="Change vs User-KNN",
-            value=f"{svd_rmse - knn_rmse:.4f}",  # The raw RMSE difference (e.g. -0.05)
-            delta=f"{((svd_rmse - knn_rmse) / knn_rmse) * 100:.2f}%",  # The percentage change (e.g. -5.20%)
-            delta_color="inverse",  # inverse: Negative (lower Error) = Green/Good
-        )
     if "item_knn_rmse" in locals():
+        st.caption("Comparison vs Item-Based KNN")
+        col1, col2, col3 = st.columns(3)
+        col1.metric(
+            label="RMSE",
+            value=f"{svd_rmse - item_knn_rmse:.4f}",
+            delta=f"{((svd_rmse - item_knn_rmse) / item_knn_rmse) * 100:.2f}%",
+            delta_color="inverse",
+        )
         col2.metric(
-            label="Change vs Item-KNN",
-            value=f"{svd_rmse - item_knn_rmse:.4f}",  # The raw RMSE difference (e.g. -0.05)
-            delta=f"{((svd_rmse - item_knn_rmse) / item_knn_rmse) * 100:.2f}%",  # The percentage change (e.g. -5.20%)
-            delta_color="inverse",  # inverse: Negative (lower Error) = Green/Good
+            label="Precision@10",
+            value=f"{svd_prec - item_knn_prec:.4f}",
+            delta=f"{((svd_prec - item_knn_prec) / item_knn_prec) * 100:.2f}%",
+        )
+        col3.metric(
+            label="Precision@10",
+            value=f"{svd_rec - item_knn_rec:.4f}",
+            delta=f"{((svd_rec - item_knn_rec) / item_knn_rec) * 100:.2f}%",
+        )
+    if "user_knn_rmse" in locals():
+        st.caption("Comparison vs User-Based KNN")
+        col1, col2, col3 = st.columns(3)
+        col1.metric(
+            label="RMSE",
+            value=f"{svd_rmse - user_knn_rmse:.4f}",
+            delta=f"{((svd_rmse - user_knn_rmse) / user_knn_rmse) * 100:.2f}%",
+            delta_color="inverse",
+        )
+        col2.metric(
+            label="Precision@10",
+            value=f"{svd_prec - user_knn_prec:.4f}",
+            delta=f"{((svd_prec - user_knn_prec) / user_knn_prec) * 100:.2f}%",
+        )
+        col3.metric(
+            label="Precision@10",
+            value=f"{svd_rec - user_knn_rec:.4f}",
+            delta=f"{((svd_rec - user_knn_rec) / user_knn_rec) * 100:.2f}%",
         )
 
-    if "knn_rmse" in locals() and "item_knn_rmse" in locals():
-        if svd_rmse < knn_rmse and svd_rmse < item_knn_rmse:
+    if "item_knn_rmse" in locals() and "user_knn_rmse" in locals():
+        if svd_rmse < user_knn_rmse and svd_rmse < item_knn_rmse:
             st.success(
-                "SVD outperformed Both Item- and User-KNN, validating the choice of Matrix Factorization for sparse data."
+                "SVD outperformed Both Item- and User-KNN for RMSE, validating the choice of Matrix Factorization for sparse data."
             )
 
     example_user = selected_user_id
@@ -386,8 +529,99 @@ with st.expander("Phase 8: Matrix Factorization (SVD)", expanded=True):
                 "Title",
                 "Rating",
                 "SVD_Prediction",
+                "User_KNN_Prediction",
                 "Item_KNN_Prediction",
-                "KNN_Prediction",
             ]
         ]
+    )
+with st.expander("Phase 9: Demo - Cold Start (Demographic Clustering)", expanded=False):
+    st.caption(
+        "Since we don't know new user's taste, we group them with similar users (Age/Gender/Job) and recommend what *that group* likes."
+    )
+
+    kmeans_model, scaler, clustered_users = train_user_clustering(users)
+
+    # 2. Generate Predictions (The "Fake" Surprise Objects)
+    with st.spinner("Calculating Cluster Predictions..."):
+        cluster_preds = get_clustering_predictions(train_df, test_df, clustered_users)
+
+    y_true = [p[2] for p in cluster_preds]  # index 2 is true_r
+    y_pred = [p[3] for p in cluster_preds]  # index 3 is est
+
+    clust_rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+
+    clust_prec, clust_rec = calculate_ranking_metrics(
+        cluster_preds, k=10, threshold=4.0
+    )
+
+    c1, c2, c3 = st.columns(3)
+
+    # RMSE vs Baseline
+    c1.metric(
+        "Cluster RMSE (Lower is better)",
+        f"{clust_rmse:.4f}",
+        delta=f"{baseline_rmse - clust_rmse:.4f} vs Baseline",
+        delta_color="inverse",
+    )
+
+    # Precision vs Baseline
+    delta_prec = (
+        f"{clust_prec - pop_prec:.4f} vs Baseline" if "pop_prec" in locals() else None
+    )
+    c2.metric("Precision@10", f"{clust_prec:.4f}", delta=delta_prec)
+
+    # Recall vs Baseline
+    delta_rec = (
+        f"{clust_rec - pop_rec:.4f} vs Baseline" if "pop_rec" in locals() else None
+    )
+    c3.metric("Recall@10", f"{clust_rec:.4f}", delta=delta_rec)
+
+    st.divider()
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        new_gender = st.selectbox("Gender", ["Male", "Female"])
+        gender_code = 1 if new_gender == "Male" else 0
+    with col2:
+        age_map = {
+            "Under 18": 1,
+            "18-24": 18,
+            "25-34": 25,
+            "35-44": 35,
+            "45-49": 45,
+            "50-55": 50,
+            "56+": 56,
+        }
+        new_age_str = st.selectbox("Age Group", list(age_map.keys()), index=2)
+        age_code = age_map[new_age_str]
+    with col3:
+        occ_map = {
+            "Student": 4,
+            "Academic/Educator": 1,
+            "Executive/Manager": 0,
+            "Writer/Artist": 20,
+            "Programmer/Engineer": 12,
+            "Other": 7,
+        }
+        new_occ_str = st.selectbox("Occupation", list(occ_map.keys()))
+        occ_code = occ_map[new_occ_str]
+
+    # Predict cluster
+    input_features = scaler.transform([[gender_code, age_code, occ_code]])
+    predicted_cluster = kmeans_model.predict(input_features)[0]
+
+    st.success(f"**Result:** This profile falls into **Cluster {predicted_cluster}**.")
+
+    # Show cold-start
+    cluster_recs = get_cluster_top_movies(
+        predicted_cluster, clustered_users, train_df, movies
+    )
+
+    st.dataframe(
+        cluster_recs[["Title", "Genres", "MeanRating", "RatingCount"]].style.format(
+            {"MeanRating": "{:.2f}"}
+        ),
+        hide_index=True,
+        use_container_width=True,
     )

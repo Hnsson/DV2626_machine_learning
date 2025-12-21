@@ -1,7 +1,8 @@
 from collections import defaultdict
 import streamlit as st
 import pandas as pd
-from sklearn.metrics import mean_squared_error
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 import numpy as np
 
 
@@ -26,6 +27,69 @@ def create_utility_matrix(data_split, users, movies):
     utility_matrix = utility_matrix.reindex(columns=movie_ids, fill_value=0)
 
     return utility_matrix.fillna(0)
+
+
+@st.cache_resource
+def train_user_clustering(users_df, n_clusters=5):
+    df = users_df.copy()
+    df["Gender_Code"] = df["Gender"].map({"F": 0, "M": 1})
+
+    scaler = StandardScaler()
+    features = df[["Gender_Code", "Age", "Occupation"]]
+    scaled_features = scaler.fit_transform(features)
+
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+    df["Cluster"] = kmeans.fit_predict(scaled_features)
+
+    return kmeans, scaler, df
+
+
+@st.cache_data
+def get_cluster_top_movies(cluster_id, clustered_users_df, train_df, movies_df, k=10):
+    cluster_users = clustered_users_df[clustered_users_df["Cluster"] == cluster_id][
+        "UserID"
+    ]
+    cluster_ratings = train_df[train_df["UserID"].isin(cluster_users)]
+
+    movie_stats = (
+        cluster_ratings.groupby("MovieID")
+        .agg(RatingCount=("Rating", "count"), MeanRating=("Rating", "mean"))
+        .reset_index()
+    )
+
+    popular_in_cluster = movie_stats[movie_stats["RatingCount"] > 5]
+
+    top_movies = popular_in_cluster.sort_values(
+        ["MeanRating", "RatingCount"], ascending=[False, False]
+    ).head(k)
+
+    return top_movies.merge(movies_df, on="MovieID")
+
+
+def get_clustering_predictions(train_df, test_df, clustered_users):
+    train_w_cluster = train_df.merge(
+        clustered_users[["UserID", "Cluster"]], on="UserID"
+    )
+
+    cluster_movie_means = (
+        train_w_cluster.groupby(["Cluster", "MovieID"])["Rating"].mean().reset_index()
+    )
+    cluster_movie_means.rename(columns={"Rating": "EstRating"}, inplace=True)
+
+    test_w_cluster = test_df.merge(clustered_users[["UserID", "Cluster"]], on="UserID")
+    predictions_df = test_w_cluster.merge(
+        cluster_movie_means, on=["Cluster", "MovieID"], how="left"
+    )
+
+    global_mean = train_df["Rating"].mean()
+    predictions_df["EstRating"] = predictions_df["EstRating"].fillna(global_mean)
+
+    formatted_preds = []
+    for row in predictions_df.itertuples():
+        formatted_preds.append(
+            (row.UserID, row.MovieID, row.Rating, row.EstRating, None)
+        )
+    return formatted_preds
 
 
 def calculate_ranking_metrics(predictions, k=10, threshold=4.0):
