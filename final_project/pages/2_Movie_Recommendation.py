@@ -56,7 +56,7 @@ with st.expander("Phase 4: Preprocessing & Splitting", expanded=False):
     if num_outliers > 0:
         st.dataframe(
             merged_df[merged_df["Is_Outlier"] == True][
-                ["UserID", "AgeDesc", "UserRatingCount", "Is_Outlier"]
+                ["UserID", "AgeDesc", "Age", "UserRatingCount", "Is_Outlier"]
             ].drop_duplicates(subset=["UserID"]),
             hide_index=True,
         )
@@ -174,11 +174,6 @@ with st.expander(
             with st.spinner("Running 3-Fold Cross-Validation on KNN..."):
                 best_score, best_params, results_df = run_tuning(merged_df, "KNN")
 
-            st.success(f"**Best RMSE found:** {best_score:.6f}")
-            st.json(best_params)
-
-            st.write("Grid Search Results:")
-
             # Small fix to make sim_options string readable in dataframe
             results_df["metric"] = results_df["param_sim_options"].apply(
                 lambda x: x["name"]
@@ -187,18 +182,30 @@ with st.expander(
                 lambda x: "User-Based" if x["user_based"] else "Item-Based"
             )
 
-            best_user_idx = results_df[results_df["type"] == "User-Based"][
-                "mean_test_rmse"
-            ].idxmin()
-            best_item_idx = results_df[results_df["type"] == "Item-Based"][
-                "mean_test_rmse"
-            ].idxmin()
+            user_results = results_df[results_df["type"] == "User-Based"]
+            item_results = results_df[results_df["type"] == "Item-Based"]
+
+            best_user_row = user_results.loc[user_results["mean_test_rmse"].idxmin()]
+            best_item_row = item_results.loc[item_results["mean_test_rmse"].idxmin()]
+
+            c1, c2 = st.columns(2)
+            with c1:
+                st.success(
+                    f"**Best User-Based RMSE:** {best_user_row['mean_test_rmse']:.6f}"
+                )
+            with c2:
+                st.info(
+                    f"**Best Item-Based RMSE:** {best_item_row['mean_test_rmse']:.6f}"
+                )
+
+            st.caption("Best parameters:")
+            st.json(best_params)
 
             def highlight_best_types(row):
-                if row.name == best_user_idx:
+                if row.name == best_user_row.name:
                     return ["background-color: #378353;"] * len(row)
-                elif row.name == best_item_idx:
-                    return ["background-color: #375282;"] * len(row)
+                elif row.name == best_item_row.name:
+                    return ["background-color: #1f6eb5;"] * len(row)
                 else:
                     return [""] * len(row)
 
@@ -536,10 +543,14 @@ with st.expander("Phase 9: Demo - Cold Start (Demographic Clustering)", expanded
     st.caption(
         "Since we don't know new user's taste, we group them with similar users (Age/Gender/Job) and recommend what *that group* likes."
     )
+    outlier_ids = merged_df[merged_df["Is_Outlier"] == True]["UserID"].unique()
+    clean_users_df = users[~users["UserID"].isin(outlier_ids)]
+    st.info(
+        f"Training Clustering Model on **{len(clean_users_df)}** users (Removed {len(outlier_ids)} outliers to prevent noise)."
+    )
 
-    kmeans_model, scaler, clustered_users = train_user_clustering(users)
+    kmeans_model, scaler, clustered_users = train_user_clustering(clean_users_df)
 
-    # 2. Generate Predictions (The "Fake" Surprise Objects)
     with st.spinner("Calculating Cluster Predictions..."):
         cluster_preds = get_clustering_predictions(train_df, test_df, clustered_users)
 
