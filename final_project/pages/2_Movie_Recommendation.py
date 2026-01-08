@@ -49,9 +49,10 @@ with st.expander("Phase 4: Preprocessing & Splitting", expanded=False):
     else:
         st.error("Could not find data files.")
 
-    st.header(f"2. Outlier Flagging (1 year old with >{NR_RATINGS_OUTLIER} ratings)")
+    st.header(
+        f"2. Outlier Flagging (Under 18 years old with >{NR_RATINGS_OUTLIER} ratings)"
+    )
     num_outliers = merged_df["Is_Outlier"].sum()
-    st.markdown(f"Flagged **{num_outliers} ratings**")
 
     if num_outliers > 0:
         st.dataframe(
@@ -90,7 +91,6 @@ with st.expander("Phase 4: Preprocessing & Splitting", expanded=False):
     )
     utility_matrix = create_utility_matrix(train_df, users, movies)
     st.write("Utility matrix shape:", utility_matrix.shape)
-    st.write("A peek at the utility matrix:")
     st.dataframe(utility_matrix.head())
 with st.expander(
     "Phase 4b: Model Configuration & Hyperparameter Tuning", expanded=False
@@ -219,13 +219,6 @@ with st.expander(
 
 # --- Baseline Models Expander ---
 with st.expander("Phase 5: Baseline Models", expanded=False):
-    st.write(
-        """
-        Before implementing complex models, it's crucial to establish a baseline.
-        These simple models provide a benchmark to evaluate the performance of more sophisticated recommenders.
-        """
-    )
-
     # --- Global Mean Baseline ---
     st.subheader("Global Mean Baseline")
     mean_rating = train_df["Rating"].mean()

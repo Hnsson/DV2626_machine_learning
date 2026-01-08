@@ -1,4 +1,5 @@
 # DV2626 Final Project: Hybrid Movie Recommendation System
+Note: Render the README.md markdown file instead for better visuals.
 
 This project implements a **Hybrid Recommender System** using the MovieLens 1M dataset. It benchmarks Memory-Based Collaborative Filtering (User-KNN, Item-KNN) against Model-Based approaches (Matrix Factorization via SVD) and implements a Demographic Clustering solution for the "Cold-Start" problem.
 
@@ -42,13 +43,10 @@ The app should automatically open in your browser at `http://localhost:8501`
 
 ## Screenshots
 ### Home page 
-![Home Page](resources/home_page.png)
 Here the home page is just a starting ground for the other pages (EDA and Movie Recommendation)
 
 ### Exploratory Data Analysis (EDA)
-![EDA Page](resources/eda_page.png)
 Here is a page about data analysis where in the top is the sizes of the datasets and then 3 tabs with different data (ratings, demographics, correlations)
 
 ### Movie recommendation
-![Recommendation Page](resources/recommendation_page.png)
 Here is the main experiment with all the steps in the project in different expanders starting with pre-processing, then model configuration and then baseline evaluation. Then the CF models Item-KNN, User-KNN and SVD being evaluated and compared with baseline as well as each other. Then lastly is a expander with the demographic clustering.
