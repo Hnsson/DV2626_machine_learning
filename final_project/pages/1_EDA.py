@@ -46,6 +46,7 @@ with tab1:
         n_users = int(users["UserID"].nunique())
         n_movies = int(movies["MovieID"].nunique())
 
+        # Calculates the % of empty cells in the User-Item matrix.
         total_actual = len(ratings)
         total_possible = n_users * n_movies
         sparsity = 1 - (total_actual / total_possible)
@@ -93,11 +94,13 @@ with tab2:
     st.divider()
     st.subheader("Edge Group Analysis (Under 18 vs 56+)")
 
+    # Group by UserID to calculate statistics per user (Like ratings)
     user_activity = (
         ratings.groupby("UserID")
         .agg(TotalRatings=("Rating", "count"), AvgRating=("Rating", "mean"))
         .reset_index()
     )
+    # Merge these back with the user demographics
     active_users = pd.merge(users, user_activity, on="UserID")
     edge_groups = active_users[active_users["AgeDesc"].isin(["Under 18", "56+"])]
 
@@ -151,6 +154,7 @@ with tab3:
 
         age_order = ["Under 18", "18-24", "25-34", "35-44", "45-49", "50-55", "56+"]
 
+        # Converts the 'AgeDesc' string into categorial type, so the line chart is in correct order.
         avg_age["AgeDesc"] = pd.Categorical(
             avg_age["AgeDesc"], categories=age_order, ordered=True
         )

@@ -39,8 +39,6 @@ AGE_MAP = {
 
 @st.cache_data
 def load_all_data():
-    """Loads Ratings, Users, and Movies into Pandas DataFrames"""
-
     ratings = pd.read_csv(
         "data/ratings.dat",
         sep="::",

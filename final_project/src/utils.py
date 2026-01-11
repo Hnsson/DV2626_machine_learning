@@ -1,6 +1,5 @@
 from collections import defaultdict
 import streamlit as st
-import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 import numpy as np
@@ -8,7 +7,6 @@ import numpy as np
 
 @st.cache_data
 def stratified_split(df, group, frac=0.8):
-    """Splits a dataframe by a group with a given fraction."""
     train = df.groupby(group).sample(frac=frac, random_state=42)
     test = df.drop(train.index)
     return train, test

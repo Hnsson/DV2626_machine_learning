@@ -14,14 +14,12 @@ from src.utils import (
 
 from surprise import Dataset, Reader, KNNBasic, SVD
 from surprise.model_selection import GridSearchCV
-from collections import defaultdict
 
 st.set_page_config(page_title="Movie Recommendation", layout="wide")
 
 st.title("Movie Recommendation System")
 
 # --- Data Loading ---
-# This is done once at the top
 ratings, users, movies = load_all_data()
 NR_RATINGS_OUTLIER = 500
 
@@ -29,10 +27,13 @@ merged_df = ratings.merge(users, on="UserID", how="left").merge(
     movies, on="MovieID", how="left"
 )
 merged_df["UserRatingCount"] = merged_df.groupby("UserID")["Rating"].transform("count")
+
+# Flagging outliers, (Under 18 and alot of ratings)
 merged_df["Is_Outlier"] = (merged_df["AgeDesc"] == "Under 18") & (
     merged_df["UserRatingCount"] > NR_RATINGS_OUTLIER
 )
 
+# The stratified splitting by UserID
 train_df, test_df = stratified_split(merged_df, "UserID")
 
 
@@ -103,6 +104,7 @@ with st.expander(
 
     @st.cache_data
     def run_tuning(df, algorithm_name):
+        # Grid Search (on sample of 20k because 1M ratings took wayyyyy too long)
         subset_df = df.sample(n=20000, random_state=42)
 
         reader = Reader(rating_scale=(1, 5))
@@ -216,10 +218,8 @@ with st.expander(
                 width="stretch",
             )
 
-
-# --- Baseline Models Expander ---
 with st.expander("Phase 5: Baseline Models", expanded=False):
-    # --- Global Mean Baseline ---
+    # Global Mean baseline
     st.subheader("Global Mean Baseline")
     mean_rating = train_df["Rating"].mean()
     test_df["MeanPrediction"] = mean_rating
@@ -228,7 +228,7 @@ with st.expander("Phase 5: Baseline Models", expanded=False):
     )
     st.metric("Training Set Mean Rating", f"{mean_rating:.4f}")
 
-    # --- Popularity Baseline ---
+    # Popularity baseline
     st.subheader("Popularity Baseline (Non-Personalized)")
     st.info(
         """
@@ -256,6 +256,7 @@ with st.expander("Phase 5: Baseline Models", expanded=False):
         precisions = []
         recalls = []
 
+        # Checks intersection between "Top 10 Popular" and "What User Liked" (Rating >= 4.0)
         for _, group in user_groups:
             relevant_items = set(group[group["Rating"] >= threshold]["MovieID"])
 
@@ -349,18 +350,16 @@ with st.expander("Phase 6: Collaborative Filtering (User-KNN)", expanded=False):
 
     @st.cache_data
     def train_and_predict_knn(train_df, test_df):
-        # 1. Re-create the Surprise objects inside (so Streamlit hashes the DataFrames correctly)
+        # Re-create the Surprise objects inside (so Streamlit hashes the DataFrames correctly)
         reader = Reader(rating_scale=(1, 5))
         train_data = Dataset.load_from_df(
             train_df[["UserID", "MovieID", "Rating"]], reader
         ).build_full_trainset()
 
-        # 2. Train
         sim_options = {"name": "pearson", "user_based": True}
         algo_knn = KNNBasic(k=20, sim_options=sim_options, verbose=False)
         algo_knn.fit(train_data)
 
-        # 3. Predict (Vectorized)
         test_set = list(zip(test_df["UserID"], test_df["MovieID"], test_df["Rating"]))
         predictions = algo_knn.test(test_set)
 
@@ -609,7 +608,7 @@ with st.expander("Phase 9: Demo - Cold Start (Demographic Clustering)", expanded
         new_occ_str = st.selectbox("Occupation", list(occ_map.keys()))
         occ_code = occ_map[new_occ_str]
 
-    # Predict cluster
+    # Predict cluster on the manual input
     input_df = pd.DataFrame(
         [[gender_code, age_code, occ_code]],
         columns=["Gender_Code", "Age", "Occupation"],
